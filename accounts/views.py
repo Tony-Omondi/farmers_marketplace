@@ -5,13 +5,15 @@ from django.contrib.auth import authenticate, get_user_model
 from rest_framework import status, permissions, views, generics
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
-
 from .models import EmailOTP
 from .serializers import (
     RegisterSerializer, VerifyOTPSerializer, LoginSerializer,
     ForgotPasswordSerializer, ResetPasswordSerializer
 )
 from .utils import send_otp_email
+import logging
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 
@@ -25,7 +27,6 @@ class RegisterView(generics.CreateAPIView):
 
     def perform_create(self, serializer):
         user = serializer.save()
-        # fetch the latest OTP for this email & send
         otp = EmailOTP.objects.filter(email=user.email, purpose=EmailOTP.PURPOSE_REGISTER, is_used=False).order_by("-created_at").first()
         if otp:
             send_otp_email(user.email, otp.code, purpose=EmailOTP.PURPOSE_REGISTER)
@@ -46,7 +47,6 @@ class VerifyOTPView(views.APIView):
         if otp.expires_at < timezone.now():
             return Response({"detail": "Code expired"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # activate user
         try:
             user = User.objects.get(email=email)
         except User.DoesNotExist:
@@ -64,6 +64,7 @@ class LoginView(views.APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        logger.info(f"Login request data: {request.data}")
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"].lower()
@@ -86,7 +87,6 @@ class ForgotPasswordView(views.APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"].lower()
 
-        # create OTP even if user exists; if not, don't reveal
         try:
             User.objects.get(email=email)
         except User.DoesNotExist:
@@ -133,8 +133,11 @@ class MeView(views.APIView):
     permission_classes = [permissions.IsAuthenticated]
     def get(self, request):
         u = request.user
+        logger.info(f"Me response for user {u.email}: is_staff={u.is_staff}, is_active={u.is_active}")
         return Response({
             "id": str(u.id),
             "email": u.email,
             "full_name": u.full_name,
+            "is_staff": u.is_staff,
+            "is_active": u.is_active  # Added is_active
         })

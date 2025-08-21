@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "accounts",
     "products",
     "orders",
+    "adamin",
 ]
 
 MIDDLEWARE = [
@@ -155,7 +156,7 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@example.com")
 
 # Paystack settings
-PAYSTACK_TEST_SECRET_KEY = os.getenv("PAYSTACK_TEST_SECRET_KEY", "your-paystack-secret-key")
+PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_TEST_SECRET_KEY", "your-paystack-secret-key")
 PAYSTACK_INITIALIZE_URL = "https://api.paystack.co/transaction/initialize"
 PAYSTACK_VERIFY_URL = "https://api.paystack.co/transaction/verify/"
 

@@ -8,7 +8,7 @@ from products.models import Product
 from django.conf import settings
 from django.core.mail import send_mail
 from rest_framework import serializers
-from django.contrib.auth import get_user_model  # Use get_user_model for custom User
+from django.contrib.auth.models import User  # Added import
 import requests
 import hmac
 import hashlib
@@ -17,7 +17,6 @@ from decimal import Decimal
 import uuid
 
 logger = logging.getLogger(__name__)
-User = get_user_model()  # Use custom User model (accounts.User)
 
 class CartListCreateView(generics.ListCreateAPIView):
     serializer_class = CartSerializer
@@ -153,7 +152,7 @@ class InitiatePaymentView(APIView):
         data = {
             "email": self.request.user.email,
             "amount": amount,
-            "callback_url": request.build_absolute_uri('/api/orders/orders/payment/callback/'),
+            "callback_url": request.build_absolute_uri('/api/orders/payment/callback/'),  # Fixed URL
             "metadata": {
                 "cart_id": str(cart.uid),
                 "custom_fields": [
