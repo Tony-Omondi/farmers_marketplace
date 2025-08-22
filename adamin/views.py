@@ -1,18 +1,54 @@
-# adamin/views.py
 from rest_framework import generics, serializers
-from rest_framework.permissions import IsAdminUser
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from orders.models import Order, OrderItem, Payment, Coupon
-from orders.serializers import OrderSerializer, PaymentSerializer  # Fixed import
+from .serializers import OrderSerializer, PaymentSerializer, AdminDashboardSerializer  # Fixed import
 from products.models import Product, Category
 from products.serializers import ProductSerializer, CategorySerializer
 from django.contrib.auth import get_user_model
 from decimal import Decimal
 import uuid
+import logging
 
+logger = logging.getLogger(__name__)
 User = get_user_model()
+
+class AdminDashboardView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request):
+        try:
+            users = User.objects.all()
+            products = Product.objects.all().select_related('category').prefetch_related('images')
+            orders = Order.objects.all().select_related('user', 'coupon', 'payment').prefetch_related('order_items__product')
+            data = {
+                'users': users,
+                'products': products,
+                'orders': orders,
+            }
+            serializer = AdminDashboardSerializer(data, context={'request': request})
+            logger.info(f"Admin dashboard data fetched for {request.user.email}")
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error fetching admin dashboard data: {str(e)}")
+            return Response({'detail': 'Error fetching data'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class CreateCategoryView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def post(self, request):
+        try:
+            serializer = CategorySerializer(data=request.data)
+            if serializer.is_valid():
+                category = serializer.save()
+                logger.info(f"Category {category.name} created by {request.user.email}")
+                return Response({'message': 'Category created successfully'}, status=status.HTTP_201_CREATED)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Error creating category: {str(e)}")
+            return Response({'detail': 'Error creating category'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class ProductListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAdminUser]
@@ -36,7 +72,7 @@ class OrderListView(generics.ListAPIView):
 class PaymentListView(generics.ListAPIView):
     permission_classes = [IsAdminUser]
     queryset = Payment.objects.all()
-    serializer_class = PaymentSerializer  # Correct reference
+    serializer_class = PaymentSerializer
     search_fields = ['reference', 'order__order_id']
 
 class UserSearchView(generics.ListAPIView):
@@ -47,6 +83,22 @@ class UserSearchView(generics.ListAPIView):
         email = request.query_params.get('email', '')
         users = User.objects.filter(email__icontains=email, is_active=True)
         return Response([{'email': user.email, 'full_name': user.full_name} for user in users])
+
+class OrderDetailView(APIView):
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request, order_id):
+        try:
+            order = Order.objects.select_related('user', 'coupon', 'payment').prefetch_related('order_items__product').get(order_id=order_id)
+            serializer = OrderSerializer(order, context={'request': request})
+            logger.info(f"Order details for {order_id} fetched by {request.user.email}")
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Order.DoesNotExist:
+            logger.warning(f"Order {order_id} not found for {request.user.email}")
+            return Response({'detail': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"Error fetching order details for {order_id}: {str(e)}")
+            return Response({'detail': 'Error fetching order details'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class OrderCreateView(APIView):
     permission_classes = [IsAdminUser]

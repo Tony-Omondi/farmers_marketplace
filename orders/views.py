@@ -153,7 +153,7 @@ class InitiatePaymentView(APIView):
         data = {
             "email": self.request.user.email,
             "amount": amount,
-            "callback_url": request.build_absolute_uri('/api/orders/orders/payment/callback/'),
+            "callback_url": 'http://localhost:5173/frontend_ai/payment-callback',
             "metadata": {
                 "cart_id": str(cart.uid),
                 "custom_fields": [

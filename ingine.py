@@ -1,422 +1,160 @@
-from rest_framework import generics, status
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 from rest_framework.views import APIView
-from .models import Cart, CartItem, Order, OrderItem, Payment, Coupon
-from .serializers import CartSerializer, CartItemSerializer, OrderSerializer, PaymentSerializer
+from rest_framework.response import Response
+from rest_framework import status, permissions
+from accounts.models import User
 from products.models import Product
-from django.conf import settings
-from django.core.mail import send_mail
-from rest_framework import serializers
-from django.contrib.auth.models import User  # Added import
-import requests
-import hmac
-import hashlib
+from orders.models import Order, OrderItem, Payment, Coupon
+from orders.serializers import OrderSerializer, PaymentSerializer
+from products.serializers import ProductSerializer, CategorySerializer
+from .serializers import AdminDashboardSerializer
 import logging
-from decimal import Decimal
-import uuid
 
 logger = logging.getLogger(__name__)
 
-class CartListCreateView(generics.ListCreateAPIView):
-    serializer_class = CartSerializer
-    permission_classes = [IsAuthenticated]
+User = get_user_model()
 
-    def get_queryset(self):
-        return Cart.objects.filter(user=self.request.user, is_paid=False)
-
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
-
-class CartItemListCreateView(generics.ListCreateAPIView):
-    serializer_class = CartItemSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        return CartItem.objects.filter(cart__user=self.request.user, cart__is_paid=False)
-
-    def perform_create(self, serializer):
-        product = serializer.validated_data['product']
-        quantity = serializer.validated_data['quantity']
-        cart, _ = Cart.objects.get_or_create(user=self.request.user, is_paid=False)
-        if quantity > product.stock:
-            raise serializers.ValidationError({"quantity": f"Insufficient stock. Available: {product.stock}"})
-        serializer.save(cart=cart)
-
-class CartItemDetailView(generics.RetrieveUpdateDestroyAPIView):
-    serializer_class = CartItemSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        return CartItem.objects.filter(cart__user=self.request.user, cart__is_paid=False)
-
-    def perform_update(self, serializer):
-        instance = serializer.instance
-        product = instance.product
-        quantity = serializer.validated_data.get('quantity')
-        if quantity is not None and quantity > product.stock:
-            raise serializers.ValidationError({"quantity": f"Insufficient stock. Available: {product.stock}"})
-        serializer.save()
-
-class ApplyCouponView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        cart = Cart.objects.filter(user=request.user, is_paid=False).first()
-        if not cart:
-            return Response({"error": "No active cart found."}, status=status.HTTP_400_BAD_REQUEST)
-        
-        serializer = CartSerializer(cart, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-class OrderListCreateView(generics.ListCreateAPIView):
-    serializer_class = OrderSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        if self.request.user.is_staff:
-            return Order.objects.all()
-        return Order.objects.filter(user=self.request.user)
-
-    def perform_create(self, serializer):
-        cart = Cart.objects.filter(user=self.request.user, is_paid=False).first()
-        if not cart or not cart.cart_items.exists():
-            raise serializers.ValidationError({"cart": "Cart is empty."})
-        
-        total_amount = Decimal('0.00')
-        for item in cart.cart_items.all():
-            if item.quantity > item.product.stock:
-                raise serializers.ValidationError({
-                    "items": f"Insufficient stock for {item.product.name}. Available: {item.product.stock}"
-                })
-            price = Decimal(item.product.price)
-            total_amount += price * item.quantity
-        
-        order = serializer.save(
-            user=self.request.user,
-            coupon=cart.coupon,
-            total_amount=total_amount
-        )
-        
-        for item in cart.cart_items.all():
-            price = Decimal(item.product.price)
-            OrderItem.objects.create(
-                order=order,
-                product=item.product,
-                quantity=item.quantity,
-                product_price=price
-            )
-            item.product.stock -= item.quantity
-            item.product.save()
-        
-        cart.cart_items.all().delete()
-        cart.coupon = None
-        cart.save()
-
-class OrderDetailView(generics.RetrieveUpdateAPIView):
-    queryset = Order.objects.all()
-    serializer_class = OrderSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        if self.request.user.is_staff:
-            return Order.objects.all()
-        return Order.objects.filter(user=self.request.user)
-
-class InitiatePaymentView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        logger.info(f"Payment initiation started for user: {request.user.email}")
-        cart = Cart.objects.filter(user=self.request.user, is_paid=False).first()
-        if not cart or not cart.cart_items.exists():
-            logger.error("Cart is empty or not found")
-            return Response({"status": False, "message": "Your cart is empty"}, status=status.HTTP_400_BAD_REQUEST)
-
-        for item in cart.cart_items.all():
-            if item.quantity > item.product.stock:
-                logger.error(f"Insufficient stock for {item.product.name}. Available: {item.product.stock}")
-                return Response({
-                    "status": False,
-                    "message": f"Insufficient stock for {item.product.name}. Available: {item.product.stock}"
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-        amount = int(cart.get_cart_total_price_after_coupon() * 100)
-        if amount <= 0:
-            logger.error("Invalid cart total")
-            return Response({"status": False, "message": "Invalid cart total"}, status=status.HTTP_400_BAD_REQUEST)
-
-        data = {
-            "email": self.request.user.email,
-            "amount": amount,
-            "callback_url": request.build_absolute_uri('/api/orders/payment/callback/'),  # Fixed URL
-            "metadata": {
-                "cart_id": str(cart.uid),
-                "custom_fields": [
-                    {
-                        "display_name": "Cart Items",
-                        "variable_name": "cart_items",
-                        "value": ", ".join([item.product.name for item in cart.cart_items.all()])
-                    }
-                ]
-            }
-        }
-
-        headers = {
-            "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
-            "Content-Type": "application/json",
-        }
-
-        try:
-            logger.info(f"Sending Paystack request: {data}")
-            response = requests.post(settings.PAYSTACK_INITIALIZE_URL, headers=headers, json=data)
-            logger.info(f"Paystack response: status={response.status_code}, body={response.text}")
-            if response.status_code == 200:
-                response_data = response.json()
-                if response_data.get('status'):
-                    logger.info(f"Payment initiated successfully: {response_data['data']['reference']}")
-                    return Response({
-                        'status': True,
-                        'authorization_url': response_data['data']['authorization_url'],
-                        'reference': response_data['data']['reference']
-                    })
-                logger.error(f"Paystack error: {response_data.get('message', 'Unknown error')}")
-                return Response({
-                    'status': False,
-                    'message': response_data.get('message', 'Payment initialization failed')
-                }, status=status.HTTP_400_BAD_REQUEST)
-            logger.error(f"Paystack request failed: status={response.status_code}, body={response.text}")
-            return Response({
-                'status': False,
-                'message': response.json().get('message', 'Payment initialization failed')
-            }, status=response.status_code)
-        except Exception as e:
-            logger.error(f"Payment initiation error: {str(e)}", exc_info=True)
-            return Response({
-                'status': False,
-                'message': f"Payment initiation error: {str(e)}"
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-class PaymentCallbackView(APIView):
-    permission_classes = []
+class AdminDashboardView(APIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
     def get(self, request):
-        reference = request.query_params.get('reference')
-        if not reference:
-            logger.error("No reference provided for payment callback")
-            return Response({"status": False, "message": "Payment verification failed"}, status=status.HTTP_400_BAD_REQUEST)
-
-        headers = {
-            "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
-            "Content-Type": "application/json",
-        }
-
         try:
-            logger.info(f"Verifying Paystack payment: reference={reference}")
-            response = requests.get(f"{settings.PAYSTACK_VERIFY_URL}{reference}", headers=headers)
-            logger.info(f"Paystack verify response: status={response.status_code}, body={response.text}")
-            if response.status_code == 200:
-                response_data = response.json()
-                if response_data.get('status') and response_data['data']['status'] == 'success':
-                    cart_id = response_data['data']['metadata']['cart_id']
-                    try:
-                        cart = Cart.objects.get(uid=cart_id, is_paid=False)
-                    except Cart.DoesNotExist:
-                        logger.error(f"Cart not found: cart_id={cart_id}")
-                        return Response({"status": False, "message": "Cart not found"}, status=status.HTTP_400_BAD_REQUEST)
-                    
-                    email = response_data['data']['customer']['email']
-                    try:
-                        user = User.objects.get(email=email)
-                    except User.DoesNotExist:
-                        logger.error(f"User not found: email={email}")
-                        return Response({"status": False, "message": "User not found"}, status=status.HTTP_400_BAD_REQUEST)
-                    
-                    for item in cart.cart_items.all():
-                        if item.quantity > item.product.stock:
-                            logger.error(f"Insufficient stock for {item.product.name}. Available: {item.product.stock}")
-                            return Response({
-                                "status": False,
-                                "message": f"Insufficient stock for {item.product.name}. Available: {item.product.stock}"
-                            }, status=status.HTTP_400_BAD_REQUEST)
-                    
-                    total_amount = Decimal('0.00')
-                    for item in cart.cart_items.all():
-                        price = Decimal(item.product.price)
-                        total_amount += price * item.quantity
-                    
-                    paystack_amount = Decimal(response_data['data']['amount']) / 100
-                    if total_amount != paystack_amount:
-                        logger.error(f"Amount mismatch: calculated={total_amount}, Paystack={paystack_amount}")
-                        return Response({"status": False, "message": "Amount mismatch"}, status=status.HTTP_400_BAD_REQUEST)
-                    
-                    order = Order.objects.create(
-                        user=user,
-                        order_id=str(uuid.uuid4()),
-                        payment_status="completed",
-                        payment_mode="Paystack",
-                        status="confirmed",
-                        coupon=cart.coupon,
-                        total_amount=total_amount
-                    )
-                    
-                    for item in cart.cart_items.all():
-                        price = Decimal(item.product.price)
-                        OrderItem.objects.create(
-                            order=order,
-                            product=item.product,
-                            quantity=item.quantity,
-                            product_price=price
-                        )
-                        item.product.stock -= item.quantity
-                        item.product.save()
-
-                    payment = Payment.objects.create(
-                        order=order,
-                        amount=total_amount,
-                        reference=reference,
-                        payment_status="completed"
-                    )
-                    cart.is_paid = True
-                    cart.cart_items.all().delete()
-                    cart.coupon = None
-                    cart.save()
-
-                    items = OrderItem.objects.filter(order=order)
-                    item_list = "\n".join([f"- {item.product.name} (Qty: {item.quantity}, Price: KSh {item.product_price:.2f})" for item in items])
-                    subject = f"Order Confirmation: {order.order_id}"
-                    message = (
-                        f"Dear {user.email},\n\n"
-                        f"Thank you for your order!\n\n"
-                        f"Order ID: {order.order_id}\n"
-                        f"Total Amount: KSh {total_amount:.2f}\n"
-                        f"Status: {order.status}\n"
-                        f"Payment Status: {order.payment_status}\n"
-                        f"Coupon Applied: {order.coupon.coupon_code if order.coupon else 'None'}\n\n"
-                        f"Items:\n{item_list}\n\n"
-                        f"Thank you for shopping with us!"
-                    )
-
-                    try:
-                        send_mail(
-                            subject=subject,
-                            message=message,
-                            from_email=settings.DEFAULT_FROM_EMAIL,
-                            recipient_list=[order.user.email],
-                            fail_silently=False,
-                        )
-                        logger.info(f"Order confirmation email sent for order_id={order.order_id}")
-                    except Exception as e:
-                        logger.error(f"Failed to send order confirmation email: {str(e)}", exc_info=True)
-
-                    logger.info(f"Order created successfully: order_id={order.order_id}")
-                    return Response({"status": True, "order_id": order.order_id}, status=status.HTTP_200_OK)
-            
-            logger.error(f"Payment verification failed: status={response.status_code}, body={response.text}")
-            return Response({"status": False, "message": "Payment verification failed"}, status=status.HTTP_400_BAD_REQUEST)
+            users = User.objects.all()
+            products = Product.objects.all().select_related('category').prefetch_related('images')
+            orders = Order.objects.all().select_related('user', 'coupon', 'payment').prefetch_related('order_items__product')
+            data = {
+                'users': users,
+                'products': products,
+                'orders': orders,
+            }
+            serializer = AdminDashboardSerializer(data, context={'request': request})
+            logger.info(f"Admin dashboard data fetched for {request.user.email}")
+            return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
-            logger.error(f"Payment verification error: {str(e)}", exc_info=True)
-            return Response({"status": False, "message": f"Payment verification error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logger.error(f"Error fetching admin dashboard data: {str(e)}")
+            return Response({'detail': 'Error fetching data'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class CreateCategoryView(APIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
     def post(self, request):
-        paystack_secret = settings.PAYSTACK_SECRET_KEY
-        signature = request.META.get('HTTP_X_PAYSTACK_SIGNATURE')
-        raw_body = request.body.decode('utf-8') if request.body else ''
-        computed_signature = hmac.new(
-            paystack_secret.encode('utf-8'),
-            raw_body.encode('utf-8'),
-            hashlib.sha512
-        ).hexdigest()
+        try:
+            serializer = CategorySerializer(data=request.data)
+            if serializer.is_valid():
+                category = serializer.save()
+                logger.info(f"Category {category.name} created by {request.user.email}")
+                return Response({'message': 'Category created successfully'}, status=status.HTTP_201_CREATED)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Error creating category: {str(e)}")
+            return Response({'detail': 'Error creating category'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        if signature != computed_signature:
-            logger.error(f"Invalid Paystack signature: received={signature}, computed={computed_signature}")
-            return Response({"status": False, "message": "Invalid signature"}, status=status.HTTP_401_UNAUTHORIZED)
+class OrderDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
-        data = request.data
-        if data.get('event') == 'charge.success':
-            reference = data['data']['reference']
-            cart_id = data['data']['metadata']['cart_id']
-            email = data['data']['customer']['email']
-            try:
-                cart = Cart.objects.get(uid=cart_id, is_paid=False)
-                user = User.objects.get(email=email)
-            except (Cart.DoesNotExist, User.DoesNotExist):
-                logger.error(f"Cart or user not found: cart_id={cart_id}, email={email}")
-                return Response({"status": False, "message": "Cart or user not found"}, status=status.HTTP_400_BAD_REQUEST)
-            
-            total_amount = Decimal('0.00')
-            for item in cart.cart_items.all():
-                price = Decimal(item.product.price)
-                total_amount += price * item.quantity
-            
-            paystack_amount = Decimal(data['data']['amount']) / 100
-            if total_amount != paystack_amount:
-                logger.error(f"Amount mismatch: calculated={total_amount}, Paystack={paystack_amount}")
-                return Response({"status": False, "message": "Amount mismatch"}, status=status.HTTP_400_BAD_REQUEST)
-            
+    def get(self, request, order_id):
+        try:
+            order = Order.objects.select_related('user', 'coupon', 'payment').prefetch_related('order_items__product').get(order_id=order_id)
+            serializer = OrderSerializer(order, context={'request': request})
+            logger.info(f"Order details for {order_id} fetched by {request.user.email}")
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Order.DoesNotExist:
+            logger.warning(f"Order {order_id} not found for {request.user.email}")
+            return Response({'detail': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"Error fetching order details for {order_id}: {str(e)}")
+            return Response({'detail': 'Error fetching order details'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class ProductListCreateView(generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+    queryset = Product.objects.all().select_related('category').prefetch_related('images')
+    serializer_class = ProductSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    filterset_fields = ['category']
+    search_fields = ['name', 'description']
+
+    def perform_create(self, serializer):
+        try:
+            product = serializer.save()
+            logger.info(f"Product {product.name} created by {self.request.user.email}")
+        except Exception as e:
+            logger.error(f"Error creating product: {str(e)}")
+            raise
+
+class CategoryListView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+    queryset = Category.objects.all()
+    serializer_class = CategorySerializer
+
+class OrderListView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+    queryset = Order.objects.all()
+    serializer_class = OrderSerializer
+    filterset_fields = ['status', 'payment_status']
+    search_fields = ['order_id', 'user__email']
+
+class PaymentListView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+    queryset = Payment.objects.all()
+    serializer_class = PaymentSerializer
+    search_fields = ['reference', 'order__order_id']
+
+class UserSearchView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+    queryset = User.objects.all()
+    serializer_class = serializers.Serializer
+    def get(self, request):
+        email = request.query_params.get('email', '')
+        users = User.objects.filter(email__icontains=email, is_active=True)
+        return Response([{'email': user.email, 'full_name': user.full_name} for user in users])
+
+class OrderCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
+    def post(self, request):
+        user_email = request.data.get('user_email')
+        items = request.data.get('items', [])
+        coupon_code = request.data.get('coupon_code')
+        payment_mode = request.data.get('payment_mode', 'Cash')
+        try:
+            user = User.objects.get(email=user_email, is_active=True)
+            total_amount = 0
+            for item in items:
+                product = Product.objects.get(id=item['product_id'])
+                total_amount += Decimal(product.price) * item['quantity']
+            if coupon_code:
+                coupon = Coupon.objects.get(coupon_code=coupon_code, active=True)
+                total_amount -= Decimal(coupon.discount)
             order = Order.objects.create(
                 user=user,
                 order_id=str(uuid.uuid4()),
-                payment_status="completed",
-                payment_mode="Paystack",
+                payment_status="completed" if payment_mode == "Cash" else "pending",
+                payment_mode=payment_mode,
                 status="confirmed",
-                coupon=cart.coupon,
-                total_amount=total_amount
+                coupon=coupon if coupon_code else None,
+                total_amount=max(total_amount, 0)
             )
-            
-            for item in cart.cart_items.all():
-                price = Decimal(item.product.price)
+            for item in items:
+                product = Product.objects.get(id=item['product_id'])
                 OrderItem.objects.create(
                     order=order,
-                    product=item.product,
-                    quantity=item.quantity,
-                    product_price=price
+                    product=product,
+                    quantity=item['quantity'],
+                    product_price=Decimal(product.price)
                 )
-                item.product.stock -= item.quantity
-                item.product.save()
-
-            payment = Payment.objects.create(
-                order=order,
-                amount=total_amount,
-                reference=reference,
-                payment_status="completed"
-            )
-            cart.is_paid = True
-            cart.cart_items.all().delete()
-            cart.coupon = None
-            cart.save()
-
-            items = OrderItem.objects.filter(order=order)
-            item_list = "\n".join([f"- {item.product.name} (Qty: {item.quantity}, Price: KSh {item.product_price:.2f})" for item in items])
-            subject = f"Order Confirmation: {order.order_id}"
-            message = (
-                f"Dear {user.email},\n\n"
-                f"Thank you for your order!\n\n"
-                f"Order ID: {order.order_id}\n"
-                f"Total Amount: KSh {total_amount:.2f}\n"
-                f"Status: {order.status}\n"
-                f"Payment Status: {order.payment_status}\n"
-                f"Coupon Applied: {order.coupon.coupon_code if order.coupon else 'None'}\n\n"
-                f"Items:\n{item_list}\n\n"
-                f"Thank you for shopping with us!"
-            )
-
-            try:
-                send_mail(
-                    subject=subject,
-                    message=message,
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[order.user.email],
-                    fail_silently=False,
+                product.stock -= item['quantity']
+                product.save()
+            if payment_mode == "Cash":
+                Payment.objects.create(
+                    order=order,
+                    amount=total_amount,
+                    payment_status="completed",
+                    reference=str(uuid.uuid4())
                 )
-                logger.info(f"Order confirmation email sent for order_id={order.order_id}")
-            except Exception as e:
-                logger.error(f"Failed to send order confirmation email: {str(e)}", exc_info=True)
-
-            logger.info(f"Webhook order created successfully: order_id={order.order_id}")
-            return Response({"status": True, "order_id": order.order_id}, status=status.HTTP_200_OK)
-        
-        return Response({"status": False, "message": "Invalid webhook event"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"status": True, "order_id": order.order_id}, status=status.HTTP_201_CREATED)
+        except User.DoesNotExist:
+            return Response({"status": False, "message": "User not found or not active"}, status=status.HTTP_404_NOT_FOUND)
+        except Product.DoesNotExist:
+            return Response({"status": False, "message": "Product not found"}, status=status.HTTP_404_NOT_FOUND)
+        except Coupon.DoesNotExist:
+            return Response({"status": False, "message": "Invalid or inactive coupon"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"status": False, "message": str(e)}, status=status.HTTP_400_BAD_REQUEST)
