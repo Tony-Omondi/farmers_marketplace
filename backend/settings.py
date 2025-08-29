@@ -13,7 +13,7 @@ SECRET_KEY = os.getenv("SECRET_KEY", "changeme-in-production")
 
 DEBUG = os.getenv("DEBUG", "True") == "True"
 
-ALLOWED_HOSTS = ["127.0.0.1", "localhost", "192.168.88.58"]
+ALLOWED_HOSTS = ["127.0.0.1", "localhost", "192.168.88.58", "farmers-marketplace-n2qm.onrender.com"]
 
 # Installed Apps
 INSTALLED_APPS = [
