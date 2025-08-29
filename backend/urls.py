@@ -10,6 +10,7 @@ urlpatterns = [
     path('api/orders/', include('orders.urls', namespace='orders')),
     path('api/', include('products.urls')),
     path('api/adamin/', include('adamin.urls')),
-] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-+ static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
-
+] 
+# Serve static & media files during development
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
