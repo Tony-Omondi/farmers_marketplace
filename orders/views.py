@@ -153,7 +153,7 @@ class InitiatePaymentView(APIView):
         data = {
             "email": self.request.user.email,
             "amount": amount,
-            "callback_url": 'http://localhost:5173/frontend_ai/payment-callback',
+            "callback_url": 'https://farmers-marketplace-n2qm.onrender.com/payment-callback',
             "metadata": {
                 "cart_id": str(cart.uid),
                 "custom_fields": [
