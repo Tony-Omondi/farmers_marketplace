@@ -13,7 +13,9 @@ SECRET_KEY = os.getenv("SECRET_KEY", "changeme-in-production")
 
 DEBUG = os.getenv("DEBUG", "True") == "True"
 
-ALLOWED_HOSTS = ["127.0.0.1", "localhost", "192.168.88.58", "farmers-marketplace-n2qm.onrender.com"]
+# for production ALLOWED_HOSTS = ["127.0.0.1", "localhost", "192.168.88.58", "farmers-marketplace-n2qm.onrender.com"]
+ALLOWED_HOSTS = ["*"]
+
 
 # Installed Apps
 INSTALLED_APPS = [
@@ -128,9 +130,10 @@ REST_FRAMEWORK = {
 }
 
 # CORS setup
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-]
+# CORS_ALLOWED_ORIGINS = [
+#     "http://localhost:5173",
+# ]
+CORS_ALLOW_ALL_ORIGINS = True
 
 CORS_ALLOW_HEADERS = [
     "authorization",
