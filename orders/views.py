@@ -153,7 +153,7 @@ class InitiatePaymentView(APIView):
         data = {
             "email": self.request.user.email,
             "amount": amount,
-            "callback_url": 'https://farmers-marketplace-ez1j.onrender.com/payment-callback',
+            "callback_url": 'https://farmers-marketplace-ez1j.onrender.com/api/orders/orders/payment/callback/',
             "metadata": {
                 "cart_id": str(cart.uid),
                 "custom_fields": [
