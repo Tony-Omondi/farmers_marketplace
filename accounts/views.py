@@ -1,4 +1,3 @@
-# accounts/views.py
 from datetime import timedelta
 from django.utils import timezone
 from django.contrib.auth import authenticate, get_user_model
@@ -12,14 +11,24 @@ from .serializers import (
 )
 from .utils import send_otp_email
 import logging
+import os
+
+# Google Auth
+from google.oauth2 import id_token
+from google.auth.transport import requests
 
 logger = logging.getLogger(__name__)
-
 User = get_user_model()
 
+# Load Google Client ID from environment
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+
+# Helper to issue JWT tokens
 def issue_tokens_for_user(user: User):
     refresh = RefreshToken.for_user(user)
     return {"refresh": str(refresh), "access": str(refresh.access_token)}
+
+# ----------------- Standard Auth Views -----------------
 
 class RegisterView(generics.CreateAPIView):
     permission_classes = [permissions.AllowAny]
@@ -27,7 +36,11 @@ class RegisterView(generics.CreateAPIView):
 
     def perform_create(self, serializer):
         user = serializer.save()
-        otp = EmailOTP.objects.filter(email=user.email, purpose=EmailOTP.PURPOSE_REGISTER, is_used=False).order_by("-created_at").first()
+        otp = EmailOTP.objects.filter(
+            email=user.email,
+            purpose=EmailOTP.PURPOSE_REGISTER,
+            is_used=False
+        ).order_by("-created_at").first()
         if otp:
             send_otp_email(user.email, otp.code, purpose=EmailOTP.PURPOSE_REGISTER)
 
@@ -43,7 +56,6 @@ class VerifyOTPView(views.APIView):
         otp = EmailOTP.objects.filter(email=email, code=code, is_used=False).order_by("-created_at").first()
         if not otp:
             return Response({"detail": "Invalid code"}, status=status.HTTP_400_BAD_REQUEST)
-
         if otp.expires_at < timezone.now():
             return Response({"detail": "Code expired"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -64,7 +76,6 @@ class LoginView(views.APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        logger.info(f"Login request data: {request.data}")
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"].lower()
@@ -133,11 +144,37 @@ class MeView(views.APIView):
     permission_classes = [permissions.IsAuthenticated]
     def get(self, request):
         u = request.user
-        logger.info(f"Me response for user {u.email}: is_staff={u.is_staff}, is_active={u.is_active}")
         return Response({
             "id": str(u.id),
             "email": u.email,
             "full_name": u.full_name,
             "is_staff": u.is_staff,
-            "is_active": u.is_active  # Added is_active
+            "is_active": u.is_active
         })
+
+# ----------------- Google Login View -----------------
+
+class GoogleLoginView(views.APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        token = request.data.get("token")
+        if not token:
+            return Response({"detail": "Token required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
+            email = idinfo.get("email")
+            full_name = idinfo.get("name")
+        except ValueError:
+            return Response({"detail": "Invalid token"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create or get user
+        user, created = User.objects.get_or_create(email=email)
+        if created:
+            user.full_name = full_name
+            user.is_active = True
+            user.save()
+
+        tokens = issue_tokens_for_user(user)
+        return Response({"message": "Logged in with Google", "tokens": tokens}, status=status.HTTP_200_OK)
