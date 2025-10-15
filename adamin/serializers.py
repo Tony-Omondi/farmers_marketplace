@@ -1,4 +1,3 @@
-# adamin/serializers.py
 from rest_framework import serializers
 from accounts.models import User
 from products.models import Product, Category, ProductImage
@@ -7,7 +6,7 @@ from orders.models import Order, OrderItem, Payment, Coupon
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'full_name', 'email', 'is_staff', 'is_active', 'date_joined']
+        fields = ['id', 'full_name', 'email', 'phone_number', 'is_staff', 'is_active', 'date_joined']
 
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
@@ -48,6 +47,21 @@ class PaymentSerializer(serializers.ModelSerializer):
         model = Payment
         fields = ['reference', 'amount', 'payment_status', 'created_at', 'updated_at']
 
+# ✅ NEW: Admin Order Detail Serializer with FULL USER INFO + EDITABLE STATUS
+class AdminOrderDetailSerializer(serializers.ModelSerializer):
+    user = UserSerializer()  # ✅ FULL USER INFO (name, email, phone!)
+    coupon = CouponSerializer(allow_null=True)
+    order_items = OrderItemSerializer(many=True)
+    payment = PaymentSerializer(allow_null=True)
+    
+    class Meta:
+        model = Order
+        fields = [
+            'id', 'order_id', 'user', 'total_amount', 'status', 'payment_status', 
+            'payment_mode', 'coupon', 'order_items', 'payment', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'order_id', 'user', 'total_amount', 'order_items', 'payment', 'created_at', 'updated_at']
+
 class OrderSerializer(serializers.ModelSerializer):
     user = UserSerializer()
     coupon = CouponSerializer(allow_null=True)
@@ -61,3 +75,11 @@ class AdminDashboardSerializer(serializers.Serializer):
     users = UserSerializer(many=True)
     products = ProductSerializer(many=True)
     orders = OrderSerializer(many=True)
+
+
+# ✅ ADD THIS NEW SERIALIZER (at the bottom)
+class AdminOrderDetailUpdateSerializer(serializers.ModelSerializer):
+    """✅ ONLY for STATUS UPDATES - No read_only issues!"""
+    class Meta:
+        model = Order
+        fields = ['status']  # Only status is editable!

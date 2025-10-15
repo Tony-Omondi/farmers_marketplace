@@ -3,12 +3,15 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .models import Cart, CartItem, Order, OrderItem, Payment, Coupon
-from .serializers import CartSerializer, CartItemSerializer, OrderSerializer, PaymentSerializer
+from .serializers import (
+    CartSerializer, CartItemSerializer, 
+    OrderSerializer, OrderCreateSerializer, OrderUpdateSerializer,  # ✅ NEW!
+    PaymentSerializer
+)
 from products.models import Product
 from django.conf import settings
 from django.core.mail import send_mail
-from rest_framework import serializers
-from django.contrib.auth import get_user_model  # Use get_user_model for custom User
+from django.contrib.auth import get_user_model
 import requests
 import hmac
 import hashlib
@@ -17,7 +20,7 @@ from decimal import Decimal
 import uuid
 
 logger = logging.getLogger(__name__)
-User = get_user_model()  # Use custom User model (accounts.User)
+User = get_user_model()
 
 class CartListCreateView(generics.ListCreateAPIView):
     serializer_class = CartSerializer
@@ -77,6 +80,11 @@ class OrderListCreateView(generics.ListCreateAPIView):
     serializer_class = OrderSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_serializer_class(self):
+        if self.request.method == 'POST':
+            return OrderCreateSerializer  # ✅ Minimal for creation
+        return OrderSerializer  # Full for listing
+
     def get_queryset(self):
         if self.request.user.is_staff:
             return Order.objects.all()
@@ -96,8 +104,13 @@ class OrderListCreateView(generics.ListCreateAPIView):
             price = Decimal(item.product.price)
             total_amount += price * item.quantity
         
-        order = serializer.save(
+        order_id = f"order-{uuid.uuid4().hex[:8]}"
+        order = Order.objects.create(
             user=self.request.user,
+            order_id=order_id,
+            payment_status="pending",
+            payment_mode="Paystack",
+            status="pending",
             coupon=cart.coupon,
             total_amount=total_amount
         )
@@ -113,19 +126,43 @@ class OrderListCreateView(generics.ListCreateAPIView):
             item.product.stock -= item.quantity
             item.product.save()
         
+        cart.is_paid = True
         cart.cart_items.all().delete()
         cart.coupon = None
         cart.save()
+        
+        logger.info(f"Order {order_id} created for {self.request.user.email}")
 
 class OrderDetailView(generics.RetrieveUpdateAPIView):
-    queryset = Order.objects.all()
-    serializer_class = OrderSerializer
     permission_classes = [IsAuthenticated]
+    lookup_field = 'pk'  # ✅ Uses Order ID (int)
+
+    def get_serializer_class(self):
+        if self.request.method == 'GET':
+            return OrderSerializer  # Full details
+        return OrderUpdateSerializer  # ✅ Only status for updates!
 
     def get_queryset(self):
         if self.request.user.is_staff:
-            return Order.objects.all()
-        return Order.objects.filter(user=self.request.user)
+            return Order.objects.select_related('user', 'coupon', 'payment').prefetch_related('order_items__product')
+        return Order.objects.filter(user=self.request.user).select_related('user', 'coupon', 'payment').prefetch_related('order_items__product')
+
+    def patch(self, request, *args, **kwargs):
+        """✅ CUSTOMER CAN'T UPDATE STATUS - Only Admin!"""
+        if not request.user.is_staff:
+            return Response({"detail": "Only admins can update order status"}, status=status.HTTP_403_FORBIDDEN)
+        
+        order = self.get_object()
+        serializer = OrderUpdateSerializer(order, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            logger.info(f"Order {order.order_id} status updated to {request.data['status']} by {request.user.email}")
+            return Response({
+                'status': True,
+                'message': f'Order status updated to {request.data["status"]}!',
+                'order': OrderSerializer(order).data
+            })
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class InitiatePaymentView(APIView):
     permission_classes = [IsAuthenticated]
@@ -254,9 +291,10 @@ class PaymentCallbackView(APIView):
                         logger.error(f"Amount mismatch: calculated={total_amount}, Paystack={paystack_amount}")
                         return Response({"status": False, "message": "Amount mismatch"}, status=status.HTTP_400_BAD_REQUEST)
                     
+                    order_id = f"order-{uuid.uuid4().hex[:8]}"
                     order = Order.objects.create(
                         user=user,
-                        order_id=str(uuid.uuid4()),
+                        order_id=order_id,
                         payment_status="completed",
                         payment_mode="Paystack",
                         status="confirmed",
@@ -290,7 +328,7 @@ class PaymentCallbackView(APIView):
                     item_list = "\n".join([f"- {item.product.name} (Qty: {item.quantity}, Price: KSh {item.product_price:.2f})" for item in items])
                     subject = f"Order Confirmation: {order.order_id}"
                     message = (
-                        f"Dear {user.email},\n\n"
+                        f"Dear {user.full_name},\n\n"
                         f"Thank you for your order!\n\n"
                         f"Order ID: {order.order_id}\n"
                         f"Total Amount: KSh {total_amount:.2f}\n"
@@ -314,7 +352,7 @@ class PaymentCallbackView(APIView):
                         logger.error(f"Failed to send order confirmation email: {str(e)}", exc_info=True)
 
                     logger.info(f"Order created successfully: order_id={order.order_id}")
-                    return Response({"status": True, "order_id": order.order_id}, status=status.HTTP_200_OK)
+                    return Response({"status": True, "order_id": order_id}, status=status.HTTP_200_OK)
             
             logger.error(f"Payment verification failed: status={response.status_code}, body={response.text}")
             return Response({"status": False, "message": "Payment verification failed"}, status=status.HTTP_400_BAD_REQUEST)
@@ -358,9 +396,10 @@ class PaymentCallbackView(APIView):
                 logger.error(f"Amount mismatch: calculated={total_amount}, Paystack={paystack_amount}")
                 return Response({"status": False, "message": "Amount mismatch"}, status=status.HTTP_400_BAD_REQUEST)
             
+            order_id = f"order-{uuid.uuid4().hex[:8]}"
             order = Order.objects.create(
                 user=user,
-                order_id=str(uuid.uuid4()),
+                order_id=order_id,
                 payment_status="completed",
                 payment_mode="Paystack",
                 status="confirmed",
@@ -394,7 +433,7 @@ class PaymentCallbackView(APIView):
             item_list = "\n".join([f"- {item.product.name} (Qty: {item.quantity}, Price: KSh {item.product_price:.2f})" for item in items])
             subject = f"Order Confirmation: {order.order_id}"
             message = (
-                f"Dear {user.email},\n\n"
+                f"Dear {user.full_name},\n\n"
                 f"Thank you for your order!\n\n"
                 f"Order ID: {order.order_id}\n"
                 f"Total Amount: KSh {total_amount:.2f}\n"
@@ -418,6 +457,6 @@ class PaymentCallbackView(APIView):
                 logger.error(f"Failed to send order confirmation email: {str(e)}", exc_info=True)
 
             logger.info(f"Webhook order created successfully: order_id={order.order_id}")
-            return Response({"status": True, "order_id": order.order_id}, status=status.HTTP_200_OK)
+            return Response({"status": True, "order_id": order_id}, status=status.HTTP_200_OK)
         
         return Response({"status": False, "message": "Invalid webhook event"}, status=status.HTTP_400_BAD_REQUEST)
