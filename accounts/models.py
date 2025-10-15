@@ -10,11 +10,11 @@ def generate_otp(length=6):
     return ''.join(random.choices(string.digits, k=length))
 
 class UserManager(BaseUserManager):
-    def create_user(self, email, password=None, full_name="", **extra_fields):
+    def create_user(self, email, password=None, full_name="", phone_number="", **extra_fields):
         if not email:
             raise ValueError("Email is required")
         email = self.normalize_email(email)
-        user = self.model(email=email, full_name=full_name, **extra_fields)
+        user = self.model(email=email, full_name=full_name, phone_number=phone_number, **extra_fields)
         if password:
             user.set_password(password)
         else:
@@ -22,16 +22,17 @@ class UserManager(BaseUserManager):
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, email, password=None, full_name="Admin", **extra_fields):
+    def create_superuser(self, email, password=None, full_name="Admin", phone_number="", **extra_fields):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         extra_fields.setdefault("is_active", True)
-        return self.create_user(email, password, full_name, **extra_fields)
+        return self.create_user(email, password, full_name, phone_number, **extra_fields)
 
 class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     full_name = models.CharField(max_length=150)
     email = models.EmailField(unique=True)
+    phone_number = models.CharField(max_length=15, blank=True, null=True)
     is_active = models.BooleanField(default=False)   # becomes True after OTP verify
     is_staff = models.BooleanField(default=False)
 

@@ -1,3 +1,4 @@
+# accounts/views.py
 from datetime import timedelta
 from django.utils import timezone
 from django.contrib.auth import authenticate, get_user_model
@@ -7,7 +8,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from .models import EmailOTP
 from .serializers import (
     RegisterSerializer, VerifyOTPSerializer, LoginSerializer,
-    ForgotPasswordSerializer, ResetPasswordSerializer
+    ForgotPasswordSerializer, ResetPasswordSerializer,
+    ProfileSerializer, UpdateProfileSerializer
 )
 from .utils import send_otp_email
 import logging
@@ -36,6 +38,7 @@ class RegisterView(generics.CreateAPIView):
 
     def perform_create(self, serializer):
         user = serializer.save()
+        # Send OTP email
         otp = EmailOTP.objects.filter(
             email=user.email,
             purpose=EmailOTP.PURPOSE_REGISTER,
@@ -140,17 +143,17 @@ class ResetPasswordView(views.APIView):
 
         return Response({"message": "Password reset successful"}, status=status.HTTP_200_OK)
 
-class MeView(views.APIView):
+# UPDATED: MeView now supports GET (view) and PATCH (edit)
+class MeView(generics.RetrieveUpdateAPIView):
     permission_classes = [permissions.IsAuthenticated]
-    def get(self, request):
-        u = request.user
-        return Response({
-            "id": str(u.id),
-            "email": u.email,
-            "full_name": u.full_name,
-            "is_staff": u.is_staff,
-            "is_active": u.is_active
-        })
+    
+    def get_serializer_class(self):
+        if self.request.method == 'GET':
+            return ProfileSerializer
+        return UpdateProfileSerializer
+    
+    def get_object(self):
+        return self.request.user
 
 # ----------------- Google Login View -----------------
 
