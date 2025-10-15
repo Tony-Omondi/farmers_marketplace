@@ -83,3 +83,26 @@ class AdminOrderDetailUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = ['status']  # Only status is editable!
+
+
+
+# ✅ MUST HAVE THESE 2 CLASSES (add if missing!)
+class AdminOrderDetailSerializer(serializers.ModelSerializer):
+    user = UserSerializer()
+    coupon = CouponSerializer(allow_null=True)
+    order_items = OrderItemSerializer(many=True)
+    payment = PaymentSerializer(allow_null=True)
+    
+    class Meta:
+        model = Order
+        fields = [
+            'id', 'order_id', 'user', 'total_amount', 'status', 'payment_status', 
+            'payment_mode', 'coupon', 'order_items', 'payment', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'order_id', 'user', 'total_amount', 'order_items', 'payment', 'created_at', 'updated_at']
+
+class AdminOrderDetailUpdateSerializer(serializers.ModelSerializer):
+    """✅ ONLY for STATUS UPDATES"""
+    class Meta:
+        model = Order
+        fields = ['status']
