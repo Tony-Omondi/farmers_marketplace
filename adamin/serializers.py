@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from accounts.models import User
-from products.models import Product, Category, ProductImage
+from products.models import Product, Category, ProductImage, Recipe, RecipeCategory
 from orders.models import Order, OrderItem, Payment, Coupon
 
 class UserSerializer(serializers.ModelSerializer):
@@ -47,9 +47,31 @@ class PaymentSerializer(serializers.ModelSerializer):
         model = Payment
         fields = ['reference', 'amount', 'payment_status', 'created_at', 'updated_at']
 
-# ✅ NEW: Admin Order Detail Serializer with FULL USER INFO + EDITABLE STATUS
+class AdminRecipeCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RecipeCategory
+        fields = ['id', 'name', 'slug', 'description']
+
+class AdminRecipeSerializer(serializers.ModelSerializer):
+    category = AdminRecipeCategorySerializer()
+    tags_list = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
+    
+    def get_tags_list(self, obj):
+        return list(obj.tags.names())
+    
+    def get_image_url(self, obj):
+        request = self.context.get('request')
+        if obj.image and hasattr(obj.image, 'url'):
+            return request.build_absolute_uri(obj.image.url)
+        return None
+    
+    class Meta:
+        model = Recipe
+        fields = '__all__'
+
 class AdminOrderDetailSerializer(serializers.ModelSerializer):
-    user = UserSerializer()  # ✅ FULL USER INFO (name, email, phone!)
+    user = UserSerializer()
     coupon = CouponSerializer(allow_null=True)
     order_items = OrderItemSerializer(many=True)
     payment = PaymentSerializer(allow_null=True)
@@ -75,34 +97,9 @@ class AdminDashboardSerializer(serializers.Serializer):
     users = UserSerializer(many=True)
     products = ProductSerializer(many=True)
     orders = OrderSerializer(many=True)
-
-
-# ✅ ADD THIS NEW SERIALIZER (at the bottom)
-class AdminOrderDetailUpdateSerializer(serializers.ModelSerializer):
-    """✅ ONLY for STATUS UPDATES - No read_only issues!"""
-    class Meta:
-        model = Order
-        fields = ['status']  # Only status is editable!
-
-
-
-# ✅ MUST HAVE THESE 2 CLASSES (add if missing!)
-class AdminOrderDetailSerializer(serializers.ModelSerializer):
-    user = UserSerializer()
-    coupon = CouponSerializer(allow_null=True)
-    order_items = OrderItemSerializer(many=True)
-    payment = PaymentSerializer(allow_null=True)
-    
-    class Meta:
-        model = Order
-        fields = [
-            'id', 'order_id', 'user', 'total_amount', 'status', 'payment_status', 
-            'payment_mode', 'coupon', 'order_items', 'payment', 'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'order_id', 'user', 'total_amount', 'order_items', 'payment', 'created_at', 'updated_at']
+    recipes = AdminRecipeSerializer(many=True)
 
 class AdminOrderDetailUpdateSerializer(serializers.ModelSerializer):
-    """✅ ONLY for STATUS UPDATES"""
     class Meta:
         model = Order
         fields = ['status']

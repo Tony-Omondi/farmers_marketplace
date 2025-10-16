@@ -1,6 +1,5 @@
-# products/serializers.py
 from rest_framework import serializers
-from .models import Product, ProductImage, Category
+from .models import Product, ProductImage, Category, Recipe, RecipeCategory
 
 class ProductImageSerializer(serializers.ModelSerializer):
     image = serializers.SerializerMethodField()
@@ -43,3 +42,84 @@ class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
         fields = ["id", "name", "slug"]
+
+class RecipeCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RecipeCategory
+        fields = ["id", "name", "slug", "description"]
+
+class RecipeSerializer(serializers.ModelSerializer):
+    category = RecipeCategorySerializer(read_only=True)
+    category_id = serializers.PrimaryKeyRelatedField(
+        queryset=RecipeCategory.objects.all(), 
+        source='category', 
+        write_only=True, 
+        allow_null=True
+    )
+    author = serializers.StringRelatedField(read_only=True)
+    tags = serializers.ListField(child=serializers.CharField(max_length=50), write_only=True, required=False)
+    tags_display = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
+
+    def get_tags_display(self, obj):
+        return list(obj.tags.names())
+
+    def get_image_url(self, obj):
+        request = self.context.get('request')
+        if obj.image and hasattr(obj.image, 'url'):
+            return request.build_absolute_uri(obj.image.url)
+        return None
+
+    class Meta:
+        model = Recipe
+        fields = [
+            'id', 'title', 'image', 'image_url', 'description', 'ingredients', 
+            'instructions', 'review', 'prep_time', 'cook_time', 'servings',
+            'category', 'category_id', 'tags', 'tags_display', 'author', 
+            'created_at', 'updated_at'
+        ]
+
+    def create(self, validated_data):
+        tags_data = validated_data.pop('tags', [])
+        recipe = Recipe.objects.create(**validated_data)
+        
+        if tags_data:
+            from taggit.models import Tag
+            for tag_name in tags_data:
+                tag, _ = Tag.objects.get_or_create(name=tag_name.lower())
+                recipe.tags.add(tag)
+        return recipe
+
+    def update(self, instance, validated_data):
+        tags_data = validated_data.pop('tags', None)
+        if tags_data is not None:
+            instance.tags.clear()
+            from taggit.models import Tag
+            for tag_name in tags_data:
+                tag, _ = Tag.objects.get_or_create(name=tag_name.lower())
+                instance.tags.add(tag)
+        return super().update(instance, validated_data)
+
+# ✅ FIXED: AdminRecipeSerializer WITH image_url!
+class AdminRecipeCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RecipeCategory
+        fields = ['id', 'name', 'slug', 'description']
+
+class AdminRecipeSerializer(serializers.ModelSerializer):
+    category = AdminRecipeCategorySerializer()
+    tags_list = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()  # ✅ FIXED!
+    
+    def get_tags_list(self, obj):
+        return list(obj.tags.names())
+    
+    def get_image_url(self, obj):  # ✅ FIXED!
+        request = self.context.get('request')
+        if obj.image and hasattr(obj.image, 'url'):
+            return request.build_absolute_uri(obj.image.url)
+        return None
+    
+    class Meta:
+        model = Recipe
+        fields = '__all__'

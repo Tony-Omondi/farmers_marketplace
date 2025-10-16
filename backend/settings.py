@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     "products",
     "orders",
     "adamin",
+    'taggit',
 ]
 
 MIDDLEWARE = [

@@ -5,9 +5,10 @@ from rest_framework.response import Response
 from orders.models import Order, OrderItem, Payment, Coupon
 from .serializers import (
     OrderSerializer, PaymentSerializer, AdminDashboardSerializer,
-    AdminOrderDetailSerializer, AdminOrderDetailUpdateSerializer
+    AdminOrderDetailSerializer, AdminOrderDetailUpdateSerializer,
+    AdminRecipeSerializer  # ✅ ADDED
 )
-from products.models import Product, Category
+from products.models import Product, Category, Recipe  # ✅ ADDED Recipe
 from products.serializers import ProductSerializer, CategorySerializer
 from django.contrib.auth import get_user_model
 from decimal import Decimal
@@ -25,10 +26,12 @@ class AdminDashboardView(APIView):
             users = User.objects.all()
             products = Product.objects.all().select_related('category').prefetch_related('images')
             orders = Order.objects.all().select_related('user', 'coupon', 'payment').prefetch_related('order_items__product')
+            recipes = Recipe.objects.select_related('category', 'author').prefetch_related('tags')  # ✅ ADDED
             data = {
                 'users': users,
                 'products': products,
                 'orders': orders,
+                'recipes': recipes,  # ✅ ADDED
             }
             serializer = AdminDashboardSerializer(data, context={'request': request})
             logger.info(f"Admin dashboard data fetched for {request.user.email}")
@@ -87,22 +90,20 @@ class UserSearchView(generics.ListAPIView):
         users = User.objects.filter(email__icontains=email, is_active=True)
         return Response([{'email': user.email, 'full_name': user.full_name} for user in users])
 
-# ✅ FIXED: OrderDetailView with <str:order_id>
 class OrderDetailView(generics.RetrieveUpdateAPIView):
     serializer_class = AdminOrderDetailSerializer
     permission_classes = [IsAdminUser]
-    lookup_field = 'order_id'  # ✅ Matches <str:order_id> in URL!
+    lookup_field = 'order_id'
 
     def get_serializer_class(self):
         if self.request.method == 'PATCH':
-            return AdminOrderDetailUpdateSerializer  # Only status!
-        return AdminOrderDetailSerializer  # Full details for GET
+            return AdminOrderDetailUpdateSerializer
+        return AdminOrderDetailSerializer
 
     def get_queryset(self):
         return Order.objects.select_related('user', 'coupon', 'payment').prefetch_related('order_items__product')
 
     def patch(self, request, *args, **kwargs):
-        """✅ UPDATE ORDER STATUS ONLY"""
         order = self.get_object()
         data = {'status': request.data.get('status')}
         
@@ -117,7 +118,6 @@ class OrderDetailView(generics.RetrieveUpdateAPIView):
             })
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-# ✅ ADDED: OrderCreateView (was MISSING!)
 class OrderCreateView(APIView):
     permission_classes = [IsAdminUser]
     
