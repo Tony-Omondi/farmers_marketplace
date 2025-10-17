@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.utils.text import slugify
 from .models import Product, ProductImage, Category, Recipe, RecipeCategory
 
 class ProductImageSerializer(serializers.ModelSerializer):
@@ -43,10 +44,35 @@ class CategorySerializer(serializers.ModelSerializer):
         model = Category
         fields = ["id", "name", "slug"]
 
+# ✅ FIXED! Your RecipeCategorySerializer with UNIQUE SLUG LOGIC
 class RecipeCategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = RecipeCategory
         fields = ["id", "name", "slug", "description"]
+    
+    def validate_name(self, value):
+        # Prevent duplicate names (case-insensitive)
+        if self.instance is None:  # Creating new
+            if RecipeCategory.objects.filter(name__iexact=value).exists():
+                raise serializers.ValidationError(
+                    f'Category "{value}" already exists. Please use a different name.'
+                )
+        return value
+    
+    def create(self, validated_data):
+        # Generate UNIQUE slug automatically
+        name = validated_data['name']
+        slug = slugify(name)
+        
+        # Make slug unique by appending counter if needed
+        original_slug = slug
+        counter = 1
+        while RecipeCategory.objects.filter(slug=slug).exists():
+            slug = f"{original_slug}-{counter}"
+            counter += 1
+        
+        validated_data['slug'] = slug
+        return super().create(validated_data)
 
 class RecipeSerializer(serializers.ModelSerializer):
     category = RecipeCategorySerializer(read_only=True)
