@@ -9,6 +9,7 @@ dj-rest-auth==7.0.1
 Django==5.2.4
 django-allauth==65.3.0
 django-cors-headers==4.7.0
+django-taggit==6.1.0
 djangorestframework==3.16.0
 djangorestframework_simplejwt==5.5.0
 google-auth==2.41.1
